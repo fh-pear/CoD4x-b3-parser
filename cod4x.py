@@ -25,20 +25,27 @@
 #                                       - Limited reason string to 126 chars (max server can handle)
 # 10/02/2016 - 0.4 - ph03n1x            - Edited duration to convert float to integer before sending to server
 #                                       - removed custom strings in commands
-
-__author__ = 'ThorN, xlr8or, 82ndab-Bravo17, ph03n1x'
-__version__ = '0.4'
+# 06/02/2017 - 0.5x - {FH}Pear           - renamed gameName from cod4 to cod4x
+#                                       - modified _guidLength from 32 to 19 in support for playerid/steamid
+#                                       - added regex for steamid
+#                                       - implemented _getpbidFromDump to retrieve 32 char guid from version 1.7
+#                                       - patched admin plugin for custom authentication logic for cod4x with playerid
+#                                       - appended 'x' to version to distinguish between cod4 and cod4x versions on b3 masterlist
+__author__ = 'ThorN, xlr8or, 82ndab-Bravo17, ph03n1x, {FH}Pear'
+__version__ = '0.5x'
 
 import b3.clients
 import b3.functions
 import b3.parsers.cod4
+import b3.parsers.cod2
 import re
+from threading import Timer
 
 
 class Cod4XParser(b3.parsers.cod4.Cod4Parser):
     gameName = 'cod4'
     IpsOnly = False
-    _guidLength = 32
+    _guidLength = 19
     _commands = {
         'message': 'tell %(cid)s %(message)s',
         'say': 'say %(message)s',
@@ -49,6 +56,80 @@ class Cod4XParser(b3.parsers.cod4.Cod4Parser):
         'tempban': 'tempban %(cid)s %(duration)sm %(reason)s',
         'kickbyfullname': 'kick %(cid)s'
     }
+
+    _regPlayer = re.compile(r'^\s*(?P<slot>[0-9]+)\s+'
+                            r'(?P<score>[0-9-]+)\s+'
+                            r'(?P<ping>[0-9]+)\s+'
+                            r'(?P<guid>[0-9a-f]+)\s+'
+                            r'(?P<steamid>[0-9a-f]+)\s+'
+                            r'(?P<name>.*?)\s+'
+                            r'(?P<last>[0-9]+?)\s*'
+                            r'(?P<ip>(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}'
+                            r'(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])):?'
+                            r'(?P<port>-?[0-9]{1,5})\s*'
+                            r'(?P<qport>-?[0-9]{1,5})\s+'
+                            r'(?P<rate>[0-9]+)$', re.IGNORECASE | re.VERBOSE)
+
+    def __new__(cls, *args, **kwargs):
+        patch_b3_clients_cod4x()
+        return b3.parsers.cod2.Cod2Parser.__new__(cls)
+
+    def pluginsStarted(self):
+        """
+        Called after the parser loaded and started all plugins.
+        """
+        self.patch_b3_admin_plugin()
+        self.debug('Admin plugin has been patched')
+	
+    #override OnJ method in cod.py parser
+	#if cod4x player uses a macos machine, their playerid will be their steamid
+    def OnJ(self, action, data, match=None):
+        codguid = match.group('guid')
+        cid = match.group('cid')
+        name = match.group('name')
+        #normally check length of guid. omit that step
+        if len(codguid) < self._guidLength:
+            if len(codguid) != 17: #17 is length of steamid
+                # invalid guid
+                self.verbose2('Invalid GUID: %s. GUID length set to %s' % (codguid, self._guidLength))
+                codguid = None
+
+        client = self.getClient(match)
+
+        if client:
+            self.verbose2('Client object already exists')
+            # lets see if the name/guids match for this client, prevent player mixups after mapchange (not with PunkBuster enabled)
+            if not self.PunkBuster:
+                if self.IpsOnly:
+                    # this needs testing since the name cleanup code may interfere with this next condition
+                    if name != client.name:
+                        self.debug('This is not the correct client (%s <> %s): disconnecting..' % (name, client.name))
+                        client.disconnect()
+                        return None
+                    else:
+                        self.verbose2('client.name in sync: %s == %s' % (name, client.name))
+                else:
+                    if codguid != client.guid:
+                        self.debug('This is not the correct client (%s <> %s): disconnecting...' % (codguid, client.guid))
+                        client.disconnect()
+                        return None
+                    else:
+                        self.verbose2('client.guid in sync: %s == %s' % (codguid, client.guid))
+
+            client.state = b3.STATE_ALIVE
+            client.name = name
+            # join-event for mapcount reasons and so forth
+            return self.getEvent('EVT_CLIENT_JOIN', client=client)
+        else:
+            if self._counter.get(cid) and self._counter.get(cid) != 'Disconnected':
+                self.verbose('cid: %s already in authentication queue: aborting join' % cid)
+                return None
+
+            self._counter[cid] = 1
+            t = Timer(2, self.newPlayer, (cid, codguid, name))
+            t.start()
+            self.debug('%s connected: waiting for authentication...' % name)
+            self.debug('Our authentication queue: %s' % self._counter)
     
     def unban(self, client, reason='', admin=None, silent=False, *kwargs):
         """
@@ -125,3 +206,183 @@ class Cod4XParser(b3.parsers.cod4.Cod4Parser):
                                                               'duration': duration,
                                                               'admin': admin}, client))
         client.disconnect()
+
+    def _getpbidFromDump(self, cid):
+        """
+        get pbid from rcon dumpuser
+        """
+        
+        _dump = {}
+        
+        for _d in self.write('dumpuser %s' % cid).strip().split('\n'): 
+            _d = ' '.join(_d.split()).split()
+            try:
+                _dump[_d[0]] = _d[1]
+            except Exception, err:
+                pass
+        self.debug('from _getpbidFromDump, _dump: %s' % _dump.items())
+        try:
+            _punkbusterid = _dump['pbguid']
+        except KeyError:
+            _punkbusterid = ''
+
+        self.debug('from _getpbidFromDump, pbid to be used: %s' % _punkbusterid)
+        return _punkbusterid
+
+    def newPlayer(self, cid, codguid, name):
+        """
+        Build a new client using data in the authentication queue.
+        :param cid: The client slot number
+        :param codguid: The client GUID
+        :param name: The client name
+        """
+        if not self._counter.get(cid):
+            self.verbose('newPlayer thread no longer needed: key no longer available')
+            return None
+        if self._counter.get(cid) == 'Disconnected':
+            self.debug('%s disconnected: removing from authentication queue' % name)
+            self._counter.pop(cid)
+            return None
+        self.debug('newClient: %s, %s, %s' % (cid, codguid, name))
+        sp = self.connectClient(cid)
+        # PunkBuster is enabled, using PB guid
+        if sp and self.PunkBuster:
+            self.debug('sp: %s' % sp)
+            # test if pbid is valid, otherwise break off and wait for another cycle to authenticate
+            if not re.match(self._pbRegExp, sp['pbid']):
+                self.debug('PB-id is not valid: giving it another try')
+                self._counter[cid] += 1
+                t = Timer(4, self.newPlayer, (cid, codguid, name))
+                t.start()
+                return None
+            if self.IpsOnly:
+                guid = sp['ip']
+                pbid = sp['pbid']
+            else:
+                guid = sp['pbid']
+                pbid = guid # save pbid in both fields to be consistent with other pb enabled databases
+            ip = sp['ip']
+            if self._counter.get(cid):
+                self._counter.pop(cid)
+            else:
+                return None
+        # PunkBuster is not enabled, using codguid
+        elif sp:
+            if self.IpsOnly:
+                codguid = sp['ip']
+            if not codguid:
+                self.warning('Missing or wrong CodGuid and PunkBuster is disabled: cannot authenticate!')
+                if self._counter.get(cid):
+                    self._counter.pop(cid)
+                return None
+            else:
+                guid = codguid
+                pbid = self._getpbidFromDump(cid)
+                ip = sp['ip']
+                if self._counter.get(cid):
+                    self._counter.pop(cid)
+                else:
+                    return None
+        elif self._counter.get(cid) > 10:
+            self.debug('Could not auth %s: giving up...' % name)
+            if self._counter.get(cid):
+                self._counter.pop(cid)
+            return None
+        # Player is not in the status response (yet), retry
+        else:
+            if self._counter.get(cid):
+                self.debug('%s not yet fully connected: retrying...#:%s' % (name, self._counter.get(cid)))
+                self._counter[cid] += 1
+                t = Timer(4, self.newPlayer, (cid, codguid, name))
+                t.start()
+            else:
+                self.warning('All authentication attempts failed')
+            return None
+
+        client = self.clients.newClient(cid, name=name, ip=ip, state=b3.STATE_ALIVE,
+                                        guid=guid, pbid=pbid, data={'codguid': codguid})
+
+        self.queueEvent(self.getEvent('EVT_CLIENT_JOIN', client=client))
+
+def patch_b3_clients_cod4x():
+
+    def cod4xClientAuthMethod(self):
+        self.console.info('Using cod4x authentication')
+        if not self.authed and self.guid and not self.authorizing:
+            self.authorizing = True
+            name = self.name
+            ip = self.ip
+            pbid = self.pbid
+            try:
+                inStorage = self.console.storage.getClient(self)
+            except KeyError, msg:
+                self.console.debug('User guid not found %s: %s', self.guid, msg)
+                self.console.debug('Game is cod4x, searching for user using pbid: %s', self.pbid)
+
+                match = {'guid': self.pbid}
+                clientList = self.console.storage.getClientsMatching(match)
+                self.console.debug('clientlist: %s' % clientList)
+
+                if len(clientList) > 1:
+                    self.console.error('More than one client found with pbid: %s', self.pbid)
+                    inStorage = False
+                elif len(clientList) == 0:
+                    self.console.debug('User pbid not found %s: %s', self.pbid, msg)
+                    inStorage = False
+                else:
+                    inStorage = clientList[0]
+                    self.console.debug('Client: %s' % inStorage)
+                    
+                    #set fields in inStorage to self
+                    self._set_id(inStorage._get_id())
+                    self._set_ip(inStorage._get_ip())
+                    self._set_connections(inStorage._get_connections())
+                    self._set_guid(inStorage._get_guid())
+                    self._set_pbid(inStorage._get_pbid())
+                    self._set_name(inStorage._get_name())
+                    self._set_auto_login(inStorage._get_auto_login())
+                    self._set_maskLevel(inStorage._get_maskLevel())
+                    self._set_groupBits(inStorage._get_groupBits())
+                    self._set_greeting(inStorage._get_greeting())
+                    self._set_timeAdd(inStorage._get_timeAdd())
+                    self._set_timeEdit(inStorage._get_timeEdit())
+                    self._set_password(inStorage._get_password())
+                    self._set_login(inStorage._get_login())
+            except Exception, e:
+                self.console.error('Auth self.console.storage.getClient(client) - %s' % self, exc_info=e)
+                self.authorizing = False
+                return False
+
+            #lastVisit = None
+            if inStorage:
+                self.console.bot('Client found in storage %s: welcome back %s', str(self.id), self.name)
+                self.lastVisit = self.timeEdit
+                if self.pbid == '':
+                    self.pbid = pbid
+            else:
+                self.console.bot('Client not found in the storage %s: create new', str(self.guid))
+
+            self.connections = int(self.connections) + 1
+            self.name = name
+            self.ip = ip
+            self.save()
+            self.authed = True
+
+            self.console.debug('Client authorized: [%s] %s - %s', self.cid, self.name, self.guid)
+
+            # check for bans
+            if self.numBans > 0:
+                ban = self.lastBan
+                if ban:
+                    self.reBan(ban)
+                    self.authorizing = False
+                    return False
+
+            self.refreshLevel()
+            self.console.queueEvent(self.console.getEvent('EVT_CLIENT_AUTH', data=self, client=self))
+            self.authorizing = False
+            return self.authed
+        else:
+            return False
+
+    b3.clients.Client.auth = cod4xClientAuthMethod
