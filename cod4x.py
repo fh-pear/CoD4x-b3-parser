@@ -25,14 +25,15 @@
 #                                       - Limited reason string to 126 chars (max server can handle)
 # 10/02/2016 - 0.4 - ph03n1x            - Edited duration to convert float to integer before sending to server
 #                                       - removed custom strings in commands
-# 06/02/2017 - 0.5x - {FH}Pear           - renamed gameName from cod4 to cod4x
-#                                       - modified _guidLength from 32 to 19 in support for playerid/steamid
+# 06/02/2017 - 0.5x - {FH}Pear          - modified _guidLength from 32 to 19 in support for playerid/steamid
 #                                       - added regex for steamid
 #                                       - implemented _getpbidFromDump to retrieve 32 char guid from version 1.7
 #                                       - patched admin plugin for custom authentication logic for cod4x with playerid
 #                                       - appended 'x' to version to distinguish between cod4 and cod4x versions on b3 masterlist
+# 06/06/2017 - 0.6x - {FH}Pear          - adjusted parser to detect sv_legacyguidmode and support both "0" and "1" results
+
 __author__ = 'ThorN, xlr8or, 82ndab-Bravo17, ph03n1x, {FH}Pear'
-__version__ = '0.5x'
+__version__ = '0.6x'
 
 import b3.clients
 import b3.functions
@@ -70,9 +71,25 @@ class Cod4XParser(b3.parsers.cod4.Cod4Parser):
                             r'(?P<qport>-?[0-9]{1,5})\s+'
                             r'(?P<rate>[0-9]+)$', re.IGNORECASE | re.VERBOSE)
 
+    _legacyMode = 0
+
     def __new__(cls, *args, **kwargs):
         patch_b3_clients_cod4x()
         return b3.parsers.cod2.Cod2Parser.__new__(cls)
+
+    def startup(self):
+        """
+        Called after the parser is created before run().
+        """
+        #check guid mode
+        result = self.write('sv_legacyguidmode')
+        
+        # change _regPlayer and back to cod4 style
+        if result.strip() == '"sv_legacyguidmode" is: "1^7" default: "0^7" info: "outputs pbguid on status command and games_mp.log^7"':
+            self._legacyMode = 1
+            self._guidLength = 32
+            self._regPlayer = b3.parsers.cod4.Cod4Parser._regPlayer
+            b3.parsers.cod4.patch_b3_clients()
 
     def pluginsStarted(self):
         """
@@ -82,7 +99,7 @@ class Cod4XParser(b3.parsers.cod4.Cod4Parser):
         self.debug('Admin plugin has been patched')
 	
     #override OnJ method in cod.py parser
-	#if cod4x player uses a macos machine, their playerid will be their steamid
+    #if cod4x player uses a macos machine, their playerid will be their steamid
     def OnJ(self, action, data, match=None):
         codguid = match.group('guid')
         cid = match.group('cid')
