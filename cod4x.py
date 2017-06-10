@@ -334,11 +334,20 @@ def patch_b3_clients_cod4x():
                 inStorage = self.console.storage.getClient(self)
             except KeyError, msg:
                 self.console.debug('User guid not found %s: %s', self.guid, msg)
-                self.console.debug('Game is cod4x, searching for user using pbid: %s', self.pbid)
+                self.console.debug('Game is cod4x, searching for user guid using pbid: %s', self.pbid)
 
                 match = {'guid': self.pbid}
                 clientList = self.console.storage.getClientsMatching(match)
+
+                # if no matches for pbid in the guid field, check the pbid field
+                # small bonus, in the future this could eventually be used to aid in tracking playerid changes
+                if len(clientList) < 1:
+                    pbidMatch = {'pbid': self.pbid}
+                    clientList.extend(self.console.storage.getClientsMatching(pbidMatch))
+
                 self.console.debug('clientlist: %s' % clientList)
+                for i,item in enumerate(clientList):
+                    self.console.verbose2('clientlist[%s]: %s' % (i, item))
 
                 if len(clientList) > 1:
                     self.console.error('More than one client found with pbid: %s', self.pbid)
