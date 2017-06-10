@@ -354,7 +354,7 @@ def patch_b3_clients_cod4x():
                     self.console.error('More than one client found with pbid: %s', self.pbid)
                     inStorage = False
                 elif len(clientList) == 0:
-                    self.console.debug('User pbid not found %s: %s', self.pbid, msg)
+                    self.console.debug('User pbid not found %s', self.pbid)
                     inStorage = False
                 else:
                     inStorage = clientList[0]
