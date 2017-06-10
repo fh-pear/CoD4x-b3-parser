@@ -31,9 +31,10 @@
 #                                       - patched admin plugin for custom authentication logic for cod4x with playerid
 #                                       - appended 'x' to version to distinguish between cod4 and cod4x versions on b3 masterlist
 # 06/06/2017 - 0.6x - {FH}Pear          - adjusted parser to detect sv_legacyguidmode and support both "0" and "1" results
+# 06/09/2017 - 0.7x - {FH}Pear          - reidentify players when their playerid changes
 
 __author__ = 'ThorN, xlr8or, 82ndab-Bravo17, ph03n1x, {FH}Pear'
-__version__ = '0.6x'
+__version__ = '0.7x'
 
 import b3.clients
 import b3.functions
